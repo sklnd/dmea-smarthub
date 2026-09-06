@@ -3,6 +3,8 @@ name = "dmea-smarthub"
 version = "0.1.0"
 description = "A python library for fetching data from DMEA SmartHub"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Chris Skalenda", email = "chris@skalenda.org" }
 ]
