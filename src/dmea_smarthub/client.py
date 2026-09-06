@@ -1,6 +1,9 @@
 """HTTP client and auth for the DMEA SmartHub co-op portal."""
 
+import base64
+import json
 import logging
+import time
 from typing import Any, Self
 
 import httpx2
@@ -51,6 +54,11 @@ class AuthResponse(CamelModel):
     is_business_user: bool = False
 
 
+class Account(CamelModel):
+    account: str
+    service_locations: list[str] = []
+
+
 class SmartHub:
     """Async SmartHub client.
 
@@ -61,14 +69,26 @@ class SmartHub:
 
     AUTH_PATH = "/services/oauth/auth/v2"
     REFRESH_PATH = "/services/oauth/auth/v2/refresh"
+    ACCOUNTS_PATH = "/services/secured/accounts"
 
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, **kwargs: Any):
+    def __init__(
+        self,
+        base_url: str = DEFAULT_BASE_URL,
+        auth: AuthResponse | None = None,
+        auth_info: AuthInfo | None = None,
+        **kwargs: Any,
+    ):
         self._http = httpx2.AsyncClient(
             base_url=base_url,
             headers={**DEFAULT_HEADERS, **kwargs.pop("headers", {})},
             **kwargs,
         )
         self.auth: AuthResponse | None = None
+        self._auth_info: AuthInfo | None = None
+        if auth and auth.authorization_token:
+            self._store(auth)
+        if auth_info:
+            self._auth_info = auth_info
 
     async def login(self, auth_info: AuthInfo) -> AuthResponse:
         """POST credentials, store the issued JWT, attach it to future requests."""
@@ -113,7 +133,58 @@ class SmartHub:
 
     def _store(self, auth: AuthResponse) -> None:
         self.auth = auth
-        self._http.headers["authorizationToken"] = auth.authorization_token
+        if auth.authorization_token:
+            self._http.headers["Authorization"] = f"Bearer {auth.authorization_token}"
+
+    async def list_accounts(self, user: str | None = None) -> list[Account]:
+        """List the accounts on the user's SmartHub profile."""
+        await self._ensure_auth()
+
+        if self.auth is None or not self.auth.username:
+            raise AuthError("cannot determine user for accounts lookup")
+
+        req = self._http.build_request(
+            "GET",
+            self.ACCOUNTS_PATH,
+            params={"user": user or self.auth.username},
+        )
+        logger.debug("route: GET %s", req.url)
+        logger.debug("request headers=%s", dict(req.headers))
+        resp = await self._http.send(req)
+        logger.debug("response %s: %s", resp.status_code, resp.text)
+        resp.raise_for_status()
+        return [Account.model_validate(item) for item in resp.json()]
+
+    async def _ensure_auth(self) -> None:
+        """Make sure we hold a live token: refresh it or re-login if expired."""
+        if self.auth is None or not self.auth.authorization_token:
+            if self._auth_info is None:
+                raise AuthError("not authenticated; login required")
+            logger.debug("no token; logging in")
+            await self.login(self._auth_info)
+            return
+        token = self.auth.authorization_token
+        if not self._jwt_expired(token):
+            return
+        logger.debug("token expired; refreshing")
+        try:
+            await self.refresh(token)
+        except AuthError:
+            if self._auth_info is None:
+                raise AuthError("token expired; re-authentication required") from None
+            logger.debug("refresh failed; re-authenticating")
+            await self.login(self._auth_info)
+
+    @staticmethod
+    def _jwt_expired(token: str) -> bool:
+        """True if the JWT's exp claim is missing or within 30s of passing."""
+        try:
+            payload_b64 = token.split(".")[1]
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
+            exp: float | None = payload.get("exp")
+        except IndexError, ValueError, TypeError, json.JSONDecodeError:
+            return True
+        return exp is None or exp <= time.time() + 30
 
     async def aclose(self) -> None:
         await self._http.aclose()
