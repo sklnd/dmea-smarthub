@@ -1,0 +1,5 @@
+[tools]
+just = "latest"
+
+[shell_alias]
+make = "just"
