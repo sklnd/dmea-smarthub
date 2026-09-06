@@ -1,38 +1,20 @@
-"""CLI for exercising the DMEA SmartHub library."""
+"""Auth subcommands for the DMEA SmartHub CLI."""
 
 import asyncio
-import logging
 
 import httpx2
 import keyring
 import keyring.errors
 import typer
-from rich.logging import RichHandler
 
 from dmea_smarthub import AuthError, AuthInfo, SmartHub
 
-app = typer.Typer(no_args_is_help=True)
+auth_app = typer.Typer(no_args_is_help=True)
 
 SERVICE = "dmea-smarthub"
 
 
-@app.callback()
-def _root(
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Enable debug logging."
-    ),
-) -> None:
-    """CLI for exercising the DMEA SmartHub library."""
-    if verbose:
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(message)s",
-            handlers=[RichHandler(rich_tracebacks=True, show_path=False)],
-            force=True,
-        )
-
-
-@app.command()
+@auth_app.command()
 def login(
     user_id: str = typer.Option(None, "--user-id", help="Defaults to saved user."),
     password: str = typer.Option(
@@ -65,7 +47,7 @@ def login(
         raise typer.Exit(1) from exc
 
 
-@app.command()
+@auth_app.command()
 def refresh() -> None:
     """Refresh the saved token and update the keychain."""
     token = keyring.get_password(SERVICE, "token")
@@ -89,7 +71,7 @@ def refresh() -> None:
         raise typer.Exit(1) from exc
 
 
-@app.command()
+@auth_app.command()
 def logout() -> None:
     """Delete saved credentials and token from the keychain."""
     for name in ("user_id", "password", "token"):
@@ -100,9 +82,9 @@ def logout() -> None:
     typer.echo("keychain entries deleted")
 
 
-@app.command()
-def show_credentials() -> None:
-    """Show what is stored in the keychain."""
+@auth_app.command("show")
+def show() -> None:
+    """Show authentication status."""
     user_id = keyring.get_password(SERVICE, "user_id")
     token = keyring.get_password(SERVICE, "token")
     if not user_id:
@@ -110,7 +92,3 @@ def show_credentials() -> None:
         raise typer.Exit(1)
     typer.echo(f"user: {user_id}")
     typer.echo(f"token: {token[:24]}..." if token else "token: none")
-
-
-def main() -> None:
-    app()
