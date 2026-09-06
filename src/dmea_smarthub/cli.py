@@ -66,6 +66,30 @@ def login(
 
 
 @app.command()
+def refresh() -> None:
+    """Refresh the saved token and update the keychain."""
+    token = keyring.get_password(SERVICE, "token")
+    if not token:
+        typer.echo("no saved token; run login first", err=True)
+        raise typer.Exit(1)
+
+    async def run() -> None:
+        async with SmartHub() as hub:
+            auth = await hub.refresh(token)
+        keyring.set_password(SERVICE, "token", auth.authorization_token)
+        typer.echo("token refreshed; keychain updated")
+
+    try:
+        asyncio.run(run())
+    except AuthError as exc:
+        typer.echo(f"refresh failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    except httpx2.HTTPError as exc:
+        typer.echo(f"request failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+@app.command()
 def logout() -> None:
     """Delete saved credentials and token from the keychain."""
     for name in ("user_id", "password", "token"):

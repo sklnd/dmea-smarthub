@@ -60,6 +60,7 @@ class SmartHub:
     """
 
     AUTH_PATH = "/services/oauth/auth/v2"
+    REFRESH_PATH = "/services/oauth/auth/v2/refresh"
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, **kwargs: Any):
         self._http = httpx2.AsyncClient(
@@ -88,9 +89,31 @@ class SmartHub:
         auth = AuthResponse.model_validate(resp.json())
         if auth.status != "SUCCESS" or not auth.authorization_token:
             raise AuthError(f"login failed (status={auth.status!r})")
+        self._store(auth)
+        return auth
+
+    async def refresh(self, token: str) -> AuthResponse:
+        """POST a token, store the refreshed JWT returned."""
+        req = self._http.build_request(
+            "POST",
+            self.REFRESH_PATH,
+            data={"token": token},
+        )
+        logger.debug("route: POST %s", req.url)
+        logger.debug("request headers=%s", dict(req.headers))
+        logger.debug("request body: token=%s...", token[:12])
+        resp = await self._http.send(req)
+        logger.debug("response %s: %s", resp.status_code, resp.text)
+        resp.raise_for_status()
+        auth = AuthResponse.model_validate(resp.json())
+        if auth.status != "SUCCESS" or not auth.authorization_token:
+            raise AuthError(f"refresh failed (status={auth.status!r})")
+        self._store(auth)
+        return auth
+
+    def _store(self, auth: AuthResponse) -> None:
         self.auth = auth
         self._http.headers["authorizationToken"] = auth.authorization_token
-        return auth
 
     async def aclose(self) -> None:
         await self._http.aclose()

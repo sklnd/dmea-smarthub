@@ -7,6 +7,8 @@ import pytest
 from dmea_smarthub import AuthError, AuthInfo, SmartHub
 
 JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1QGV4YW1wbGUuY29tIn0.sig"
+JWT2 = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJyZWZyZXNoIn0.sig2"
+OLD_TOKEN = "old-token"
 
 RESP = {
     "status": "SUCCESS",
@@ -21,13 +23,19 @@ RESP = {
 
 
 def handler(request: httpx2.Request) -> httpx2.Response:
-    assert request.url.path == "/services/oauth/auth/v2"
-    assert request.headers["content-type"] == "application/x-www-form-urlencoded"
     form = urllib.parse.parse_qs(request.content.decode())
-    if form["password"] == ["good"]:
-        return httpx2.Response(200, json=RESP)
+    if request.url.path == "/services/oauth/auth/v2":
+        assert request.headers["content-type"] == "application/x-www-form-urlencoded"
+        if form["password"] == ["good"]:
+            return httpx2.Response(200, json=RESP)
+        return httpx2.Response(
+            200, json={"status": "INVALID_CREDENTIALS", "authorizationToken": ""}
+        )
+    assert request.url.path == "/services/oauth/auth/v2/refresh"
+    if form["token"] == [OLD_TOKEN]:
+        return httpx2.Response(200, json={**RESP, "authorizationToken": JWT2})
     return httpx2.Response(
-        200, json={"status": "INVALID_CREDENTIALS", "authorizationToken": ""}
+        200, json={"status": "INVALID_TOKEN", "authorizationToken": ""}
     )
 
 
@@ -54,5 +62,25 @@ def test_login_failure(hub: SmartHub):
         async with hub:
             with pytest.raises(AuthError):
                 await hub.login(AuthInfo(user_id="u@example.com", password="bad"))
+
+    asyncio.run(run())
+
+
+def test_refresh_success(hub: SmartHub):
+    async def run():
+        async with hub:
+            auth = await hub.refresh(OLD_TOKEN)
+            assert auth.authorization_token == JWT2
+            assert auth.status == "SUCCESS"
+            assert hub._http.headers["authorizationToken"] == JWT2
+
+    asyncio.run(run())
+
+
+def test_refresh_failure(hub: SmartHub):
+    async def run():
+        async with hub:
+            with pytest.raises(AuthError):
+                await hub.refresh("bogus")
 
     asyncio.run(run())
