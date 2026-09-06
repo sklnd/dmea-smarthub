@@ -1,16 +1,26 @@
 """HTTP client and auth for the DMEA SmartHub co-op portal."""
 
+import logging
 from typing import Any, Self
 
 import httpx2
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 from pydantic.alias_generators import to_camel
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_BASE_URL = "https://dmea.smarthub.coop"
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+DEFAULT_USER_AGENT = "dmea-smarthub/0.1"
+DEFAULT_HEADERS = {
+    "User-Agent": DEFAULT_USER_AGENT,
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://dmea.smarthub.coop",
+    "Referer": "https://dmea.smarthub.coop/ui/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
 
 
 class AuthError(Exception):
@@ -21,6 +31,13 @@ class CamelModel(BaseModel):
     """Validates SmartHub's camelCase JSON, exposes snake_case fields."""
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class AuthInfo(BaseModel):
+    """Credentials for SmartHub login."""
+
+    user_id: str
+    password: SecretStr
 
 
 class AuthResponse(CamelModel):
@@ -39,7 +56,7 @@ class SmartHub:
 
     Usage:
         async with SmartHub() as hub:
-            auth = await hub.login(user_id, password)
+            auth = await hub.login(AuthInfo(user_id=..., password=...))
     """
 
     AUTH_PATH = "/services/oauth/auth/v2"
@@ -47,23 +64,31 @@ class SmartHub:
     def __init__(self, base_url: str = DEFAULT_BASE_URL, **kwargs: Any):
         self._http = httpx2.AsyncClient(
             base_url=base_url,
-            headers={"User-Agent": DEFAULT_USER_AGENT},
+            headers={**DEFAULT_HEADERS, **kwargs.pop("headers", {})},
             **kwargs,
         )
         self.auth: AuthResponse | None = None
 
-    async def login(self, user_id: str, password: str) -> AuthResponse:
+    async def login(self, auth_info: AuthInfo) -> AuthResponse:
         """POST credentials, store the issued JWT, attach it to future requests."""
-        resp = await self._http.post(
+        req = self._http.build_request(
+            "POST",
             self.AUTH_PATH,
-            data={"userId": user_id, "password": password},
+            data={
+                "userId": auth_info.user_id,
+                "password": auth_info.password.get_secret_value(),
+            },
         )
+        logger.debug("route: POST %s", req.url)
+        logger.debug("request headers=%s", dict(req.headers))
+        logger.debug("request body: userId=%s password=***", auth_info.user_id)
+        resp = await self._http.send(req)
+        logger.debug("response %s: %s", resp.status_code, resp.text)
         resp.raise_for_status()
         auth = AuthResponse.model_validate(resp.json())
         if auth.status != "SUCCESS" or not auth.authorization_token:
             raise AuthError(f"login failed (status={auth.status!r})")
         self.auth = auth
-        # ponytail: header name unverified; confirm against devtools captures of usage endpoints
         self._http.headers["authorizationToken"] = auth.authorization_token
         return auth
 
