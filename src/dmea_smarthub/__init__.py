@@ -1,3 +1,27 @@
-from .client import Account, AuthError, AuthInfo, AuthResponse, SmartHub
+from .client import (
+    Account,
+    Aggregation,
+    AuthError,
+    AuthInfo,
+    AuthResponse,
+    SmartHub,
+    TimeRange,
+    UsageComplete,
+    UsageError,
+    UsagePending,
+    UsageResponse,
+)
 
-__all__ = ["Account", "AuthError", "AuthInfo", "AuthResponse", "SmartHub"]
+__all__ = [
+    "Account",
+    "Aggregation",
+    "AuthError",
+    "AuthInfo",
+    "AuthResponse",
+    "SmartHub",
+    "TimeRange",
+    "UsageComplete",
+    "UsageError",
+    "UsagePending",
+    "UsageResponse",
+]

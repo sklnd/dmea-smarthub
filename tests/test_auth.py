@@ -9,8 +9,22 @@ import pytest
 
 from dmea_smarthub import Account, AuthError, AuthInfo, AuthResponse, SmartHub
 
-JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1QGV4YW1wbGUuY29tIn0.sig"
-JWT2 = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJyZWZyZXNoIn0.sig2"
+# fixed "now" the mock tokens are minted against; see travel_to_frozen fixture
+FROZEN = time.time()
+
+
+def make_jwt(exp_offset: float) -> str:
+    """Craft an unsigned JWT with an exp claim exp_offset seconds from FROZEN."""
+
+    def b64(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    return f"{b64({'alg': 'none'})}.{b64({'exp': FROZEN + exp_offset})}.sig"
+
+
+# tokens the mock auth endpoints issue: fresh (future exp) and refreshed
+JWT = make_jwt(3600)
+JWT2 = make_jwt(3600)
 OLD_TOKEN = "old-token"
 
 RESP = {
@@ -29,16 +43,7 @@ ACCOUNTS = [
     {"account": "1708290003", "serviceLocations": ["17082900"]},
 ]
 
-state = {"seen": []}
-
-
-def make_jwt(exp_offset: float) -> str:
-    """Craft an unsigned JWT with an exp claim exp_offset seconds from now."""
-
-    def b64(obj: dict) -> str:
-        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-
-    return f"{b64({'alg': 'none'})}.{b64({'exp': time.time() + exp_offset})}.sig"
+state: dict = {"seen": []}
 
 
 def handler(request: httpx2.Request) -> httpx2.Response:
@@ -51,6 +56,10 @@ def handler(request: httpx2.Request) -> httpx2.Response:
             200, json={"status": "INVALID_CREDENTIALS", "authorizationToken": ""}
         )
     if request.url.path == "/services/oauth/auth/v2/refresh":
+        if state.get("refresh_fails"):
+            return httpx2.Response(500, text="boom")
+        if state.get("refresh_junk"):
+            return httpx2.Response(200, json={"isBusinessUser": False})
         if form["token"] == ["bogus"]:
             return httpx2.Response(
                 200, json={"status": "INVALID_TOKEN", "authorizationToken": ""}
@@ -66,6 +75,8 @@ def handler(request: httpx2.Request) -> httpx2.Response:
 @pytest.fixture(autouse=True)
 def reset_state():
     state["seen"] = []
+    state.pop("refresh_fails", None)
+    state.pop("refresh_junk", None)
 
 
 @pytest.fixture
@@ -115,7 +126,7 @@ def test_refresh_failure(hub: SmartHub):
     asyncio.run(run())
 
 
-def test_list_accounts_with_valid_token():
+def test_list_accounts_with_valid_token(travel_to_frozen):
     auth = AuthResponse(
         status="SUCCESS",
         authorization_token=make_jwt(3600),
@@ -133,7 +144,7 @@ def test_list_accounts_with_valid_token():
     asyncio.run(run())
 
 
-def test_list_accounts_refreshes_expired_token():
+def test_list_accounts_refreshes_expired_token(travel_to_frozen):
     async def run():
         auth = AuthResponse(
             status="SUCCESS",
@@ -150,7 +161,7 @@ def test_list_accounts_refreshes_expired_token():
     asyncio.run(run())
 
 
-def test_list_accounts_relogins_when_refresh_fails():
+def test_list_accounts_relogins_when_refresh_fails(travel_to_frozen):
     async def run():
         auth = AuthResponse(
             status="SUCCESS",
@@ -171,7 +182,7 @@ def test_list_accounts_relogins_when_refresh_fails():
     asyncio.run(run())
 
 
-def test_list_accounts_no_auth_no_credentials():
+def test_list_accounts_no_auth_no_credentials(travel_to_frozen):
     async def run():
         async with SmartHub(transport=httpx2.MockTransport(handler)) as fresh:
             with pytest.raises(AuthError):
@@ -184,3 +195,64 @@ def test_account_model():
     acct = Account.model_validate(ACCOUNTS[0])
     assert acct.account == "1706049004"
     assert acct.service_locations == ["17060490"]
+
+
+def test_refresh_500_falls_back_to_relogin(travel_to_frozen):
+    """A 500 (or junk body) on refresh must trigger re-login, not leak errors."""
+    state["refresh_fails"] = True
+
+    async def run():
+        auth = AuthResponse(
+            status="SUCCESS",
+            authorization_token=make_jwt(-3600),
+            username="u@example.com",
+        )
+        async with SmartHub(
+            transport=httpx2.MockTransport(handler),
+            auth=auth,
+            auth_info=AuthInfo(user_id="u@example.com", password="good"),
+        ) as hub:
+            accounts = await hub.list_accounts()
+            assert hub.auth is not None
+            assert hub.auth.authorization_token == JWT
+            assert state["seen"] == [JWT]
+            assert len(accounts) == 2
+
+    asyncio.run(run())
+
+
+def test_refresh_junk_body_falls_back_to_relogin(travel_to_frozen):
+    state["refresh_junk"] = True
+
+    async def run():
+        auth = AuthResponse(
+            status="SUCCESS",
+            authorization_token=make_jwt(-3600),
+            username="u@example.com",
+        )
+        async with SmartHub(
+            transport=httpx2.MockTransport(handler),
+            auth=auth,
+            auth_info=AuthInfo(user_id="u@example.com", password="good"),
+        ) as hub:
+            await hub.list_accounts()
+            assert hub.auth is not None
+            assert hub.auth.authorization_token == JWT
+
+    asyncio.run(run())
+
+
+def test_refresh_failure_without_credentials(travel_to_frozen):
+    state["refresh_junk"] = True
+
+    async def run():
+        auth = AuthResponse(
+            status="SUCCESS",
+            authorization_token=make_jwt(-3600),
+            username="u@example.com",
+        )
+        async with SmartHub(transport=httpx2.MockTransport(handler), auth=auth) as hub:
+            await hub.list_accounts()
+
+    with pytest.raises(AuthError, match="re-authentication required"):
+        asyncio.run(run())

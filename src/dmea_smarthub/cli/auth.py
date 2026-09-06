@@ -8,10 +8,9 @@ import keyring.errors
 import typer
 
 from dmea_smarthub import AuthError, AuthInfo, SmartHub
+from dmea_smarthub.cli.common import SERVICE
 
 auth_app = typer.Typer(no_args_is_help=True)
-
-SERVICE = "dmea-smarthub"
 
 
 @auth_app.command()

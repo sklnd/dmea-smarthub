@@ -7,10 +7,12 @@ from rich.logging import RichHandler
 
 from dmea_smarthub.cli.accounts import accounts_app
 from dmea_smarthub.cli.auth import auth_app
+from dmea_smarthub.cli.usage import usage_app
 
 app = typer.Typer(no_args_is_help=True)
 app.add_typer(auth_app, name="auth", help="Login, logout, token refresh.")
 app.add_typer(accounts_app, name="accounts", help="Account lookups.")
+app.add_typer(usage_app, name="usage", help="Utility usage lookups.")
 
 
 @app.callback()
